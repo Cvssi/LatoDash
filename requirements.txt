@@ -1,0 +1,8 @@
+# Compatible ranges; reviewed on CPython 3.14. Desktop minimum: Python 3.11.
+# LatoDash.bat reinstalls automatically when this file changes.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+websockets>=13,<18
+asyncssh>=2.17,<3
+httpx>=0.27,<1
+tomli>=2.0; python_version < "3.11"

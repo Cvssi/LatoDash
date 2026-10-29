@@ -1,0 +1,105 @@
+#!/usr/bin/python3 -I
+"""Root-owned local-model switcher. Atomic env edit, private backup, restart rollback."""
+import fcntl
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+
+ENV = Path('/etc/latochan.env')
+ROOT_UID = 0
+OLLAMA = shutil.which("ollama", path="/usr/local/bin:/usr/bin:/bin") or "/usr/local/bin/ollama"
+SYSTEMCTL = "/usr/bin/systemctl"
+
+
+def read_env():
+    fd = os.open(ENV, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as source:
+        info = os.fstat(source.fileno())
+        if info.st_uid != ROOT_UID or info.st_mode & 0o077:
+            raise ValueError('Environment file must be administrator-owned, mode 0600')
+        data = source.read(65537)
+    if len(data) > 65536:
+        raise ValueError('Environment file too large')
+    return data
+
+
+def model_from(data):
+    for raw in data.decode('utf-8').splitlines():
+        key, sep, value = raw.partition('=')
+        if sep and key.strip() == 'LLM_MODEL':
+            return ' '.join(shlex.split(value))
+    return ''
+
+
+def atomic(data):
+    fd, temporary = tempfile.mkstemp(dir=ENV.parent, prefix='.lato-model-')
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, ENV)
+        directory = os.open(ENV.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def switch(model):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', model) or model.endswith(':cloud'):
+        raise ValueError('Use an installed local model name')
+    subprocess.run([OLLAMA, 'show', model], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+    lock = os.open(str(ENV) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.fstat(lock).st_uid != ROOT_UID:
+            raise ValueError('Unsafe environment lock owner')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        before = read_env()
+        backup = ENV.with_name(ENV.name + '.bak-model-' + uuid.uuid4().hex)
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as output:
+            output.write(before)
+            output.flush()
+            os.fsync(output.fileno())
+        lines = [line for line in before.decode('utf-8').splitlines() if line.partition('=')[0].strip() != 'LLM_MODEL']
+        lines.append(f'LLM_MODEL="{model}"')
+        atomic(('\n'.join(lines) + '\n').encode())
+        try:
+            subprocess.run([SYSTEMCTL, 'restart', 'latochan.service'], check=True, timeout=30)
+            subprocess.run([SYSTEMCTL, 'is-active', '--quiet', 'latochan.service'], check=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            atomic(before)
+            subprocess.run([SYSTEMCTL, 'restart', 'latochan.service'], check=False, timeout=30)
+            raise ValueError('Model switch failed; previous environment restored. Verify service status.') from None
+        return f'latochan now on {model}'
+    finally:
+        os.close(lock)
+
+
+def main():
+    if os.geteuid() != ROOT_UID:
+        raise ValueError('Use the authorized sudo helper')
+    if sys.argv[1:] == ['--show']:
+        print(model_from(read_env()))
+    elif len(sys.argv) == 2:
+        print(switch(sys.argv[1]))
+    else:
+        raise ValueError('Usage: lato-set-model [--show|installed-local-model]')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        sys.exit(str(error))

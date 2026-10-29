@@ -1,0 +1,9 @@
+# Replace YOUR_DASHBOARD_USER with your dedicated dashboard SSH account.
+# This account must not have other rules granting unrestricted sudo.
+# Review and validate with visudo before installing as root:root mode 0440.
+# Install the root-owned persona/model helpers first.
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart latochan.service
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart ollama.service
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/bin/lato-say
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/sbin/lato-persona-install
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/sbin/lato-set-model

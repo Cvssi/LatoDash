@@ -1,0 +1,26 @@
+# LatoDash settings. Relative paths are relative to this file's folder.
+
+[ssh]
+host = "YOUR_SERVER_HOST"
+user = "YOUR_SSH_USER"
+key_file = "keys/latodash_ed25519"        # dedicated dashboard key (LAN-only on the server)
+known_hosts = "keys/known_hosts"          # server host key is pinned here
+# port = 22
+
+[app]
+listen_port = 8765                        # http://127.0.0.1:8765 - only this PC can open it
+open_browser = true
+# latochan_dir = "../LatoChan"           # optional: local folder where Pull persona / Pull memory also save a copy
+
+[server]
+default_model = "latochan"
+persona_path = "/etc/latochan/persona.md"
+main_channel_id = ""                         # your main Discord channel id (optional; used for "Post as bot")
+num_ctx = 8192                            # keep equal to the bot's NUM_CTX so CLI chats don't force a model reload
+# extra_units = ["gpu-watchdog.service", "gpu-fan.service", "gpu-tune.service", "lato-reminders.timer", "lato-memory-reminder.timer"]
+
+[thresholds]
+gpu_junction_warn = 95.0
+gpu_junction_crit = 100.0
+reply_pending_warn_s = 120.0
+reply_pending_crit_s = 300.0

@@ -1,0 +1,22 @@
+[project]
+name = "latodash"
+version = "1.1.0"
+description = "Local web dashboard for a LatoChan Discord bot server"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+extend-exclude = ["latodash/vendor"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM"]
+ignore = ["SIM105", "SIM117", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"latodash/demo.py" = ["E501", "SIM905"]
+"latodash/journal.py" = ["E501"]
+"tests/*" = ["E501", "B008"]

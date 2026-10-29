@@ -1,0 +1,107 @@
+#!/usr/bin/python3 -I
+"""Root-owned fixed-path persona helper. No imports from the bot or dashboard tree."""
+import fcntl
+import json
+import os
+from pathlib import Path
+import shlex
+import stat
+import sys
+import tempfile
+import uuid
+
+ENV = Path('/etc/latochan.env')
+ALLOWED = {Path('/etc/latochan/persona.md'), Path('/opt/latochan/persona.md')}
+ROOT_UID = 0
+MAX = 262144
+
+
+def target():
+    fd = os.open(ENV, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'r', encoding='utf-8') as source:
+        info = os.fstat(source.fileno())
+        if info.st_uid != ROOT_UID or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode):
+            raise ValueError('Unsafe environment file ownership/mode')
+        values = {}
+        for raw in source.read(65537).splitlines():
+            if raw.strip() and not raw.lstrip().startswith('#'):
+                key, sep, value = raw.partition('=')
+                if sep:
+                    values[key.strip()] = ' '.join(shlex.split(value))
+    path = Path(values.get('PERSONA_PATH', '/opt/latochan/persona.md'))
+    if path not in ALLOWED or path.parent.is_symlink():
+        raise ValueError('Persona path must be /etc/latochan/persona.md or the protected legacy path')
+    parent = path.parent.stat()
+    if parent.st_uid != ROOT_UID or parent.st_mode & 0o022:
+        raise ValueError('Install the reviewed bot first: persona directory must be administrator-owned')
+    return path
+
+
+def read(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError('Persona must be a regular file')
+        data = source.read(MAX + 1)
+    if len(data) > MAX:
+        raise ValueError('Persona larger than 256 KiB')
+    return data
+
+
+def atomic(path, data, mode):
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.persona-')
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            os.fchmod(output.fileno(), mode)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def write(path, data):
+    if len(data) > MAX or not data.strip() or b'\x00' in data:
+        raise ValueError('Persona must be nonblank UTF-8 text of at most 256 KiB')
+    data.decode('utf-8')
+    lock = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        if os.fstat(lock).st_uid != ROOT_UID:
+            raise ValueError('Unsafe persona lock owner')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        backup = path.with_name(path.name + '.bak-' + uuid.uuid4().hex) if path.exists() else None
+        if backup is not None:
+            atomic(backup, read(path), 0o600)
+        atomic(path, data, 0o644)
+        return {'protocol': 2, 'path': str(path), 'backup': str(backup) if backup else None}
+    finally:
+        os.close(lock)
+
+
+def main():
+    if os.geteuid() != ROOT_UID:
+        raise ValueError('Run through the narrowly authorized sudo helper')
+    path = target()
+    args = sys.argv[1:]
+    if args == ['--info']:
+        print(json.dumps({'protocol': 2, 'path': str(path)}))
+    elif args == ['--read']:
+        sys.stdout.buffer.write(read(path))
+    elif not args:
+        print(json.dumps(write(path, sys.stdin.buffer.read(MAX + 1))))
+    else:
+        raise ValueError('Usage: lato-persona-install [--info|--read]')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        sys.exit(str(error))

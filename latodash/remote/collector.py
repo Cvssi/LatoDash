@@ -16,7 +16,7 @@ import urllib.request
 ARGS = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
 INTERVAL = float(ARGS.get("interval", 2.0))
 UNITS = list(ARGS.get("units", ["latochan.service", "ollama.service"]))
-OLLAMA = ARGS.get("ollama", "http://127.0.0.1:11434")
+OLLAMA = ARGS.get("ollama", "http://localhost:11434")
 SETTINGS = ARGS.get("settings", "/var/lib/latochan/settings.json")
 SERVICE_EVERY = 5      # ticks (10 s at 2 s interval)
 TAGS_EVERY = 60        # ticks (2 min)
@@ -152,13 +152,50 @@ def find_gpu():
 
 
 GPU_DEV, GPU_HW = find_gpu()
+NVIDIA_SMI = shutil.which("nvidia-smi")
+NVIDIA_FIELDS = ("utilization.gpu", "utilization.memory", "memory.used", "memory.total", "temperature.gpu",
+                 "power.draw", "power.limit", "fan.speed", "clocks.gr", "clocks.mem", "name")
 
 
-def gpu_section():
-    if not GPU_DEV:
+def _num(text):
+    try:
+        return float(text)
+    except ValueError:      # "[N/A]", "[Not Supported]"
         return None
+
+
+def nvidia_section():
+    """Same keys as the amdgpu branch, from nvidia-smi. First GPU on top level, every GPU under "gpus"."""
+    r = subprocess.run([NVIDIA_SMI, "--query-gpu=" + ",".join(NVIDIA_FIELDS), "--format=csv,noheader,nounits"],
+                       capture_output=True, text=True, timeout=4)
+    if r.returncode != 0:
+        raise RuntimeError(((r.stderr or r.stdout).strip() or f"nvidia-smi exit {r.returncode}")[:120])
+    mib = 1024 * 1024
+    gpus = []
+    for i, line in enumerate(r.stdout.strip().splitlines()):
+        p = [x.strip() for x in line.split(",")]
+        if len(p) < len(NVIDIA_FIELDS):
+            continue
+        busy, mem_busy, used, total, temp, power, cap, fan, sclk, mclk = (_num(x) for x in p[:10])
+        gpus.append({
+            "index": i, "name": ",".join(p[10:]),
+            "busy": busy, "mem_busy": mem_busy,
+            "vram_used": int(used * mib) if used is not None else None,
+            "vram_total": int(total * mib) if total is not None else None,
+            "temp_edge": temp, "power_w": power, "power_cap_w": round(cap) if cap is not None else None,
+            "fan_pct": fan, "sclk_mhz": round(sclk) if sclk is not None else None,
+            "mclk_mhz": round(mclk) if mclk is not None else None,
+        })
+    if not gpus:
+        raise RuntimeError("nvidia-smi returned no GPUs")
+    return {**gpus[0], "gpus": gpus}
+
+
+
+def amd_section():
     d, h = GPU_DEV, GPU_HW
     g = {
+        "vendor": "amd", "name": read(d + "/product_name") or "AMD GPU",
         "busy": read_int(d + "/gpu_busy_percent"),
         "mem_busy": read_int(d + "/mem_busy_percent"),
         "vram_used": read_int(d + "/mem_info_vram_used"),
@@ -186,6 +223,33 @@ def gpu_section():
         mv = read_int(h + "/in0_input")
         g["vddgfx_mv"] = mv
     return g
+
+
+def gpu_section():
+    """AMD (sysfs) and NVIDIA (nvidia-smi) side by side. The NVIDIA card is the primary (top-level keys)
+    because it is the one running inference when both are installed; every GPU is listed under "gpus"."""
+    amd = amd_section() if GPU_DEV else None
+    nv, nv_err = None, None
+    if NVIDIA_SMI:
+        try:
+            nv = nvidia_section()
+        except Exception as e:           # a dead NVIDIA driver must not hide a working AMD card
+            if not amd:
+                raise
+            nv_err = str(e)[:120]
+    if nv:
+        cards = [dict(x, vendor="nvidia") for x in nv["gpus"]]
+        if amd:
+            cards.append(amd)
+        for i, c in enumerate(cards):
+            c["index"] = i
+        return {**cards[0], "gpus": cards}
+    if not amd:
+        return None
+    out = {**amd, "gpus": [dict(amd, index=0)]}
+    if nv_err:
+        out["nvidia_error"] = nv_err
+    return out
 
 
 def cgroup_section(now):

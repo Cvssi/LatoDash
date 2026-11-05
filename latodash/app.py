@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from anyio import CancelScope
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +40,16 @@ class Runtime:
     stop: Callable[[], Awaitable[None]]
     demo: bool = False
     tasks: list[asyncio.Task[Any]] = field(default_factory=list)
+
+
+
+class NoCacheStatic(StaticFiles):
+    """Always revalidate: after an update the browser must not keep serving the old JS modules."""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 def real_runtime(cfg: AppConfig) -> Runtime:
@@ -78,16 +89,42 @@ class TextBody(BaseModel):
     content: str = Field(max_length=600_000)
 
 
+class PowerBody(BaseModel):
+    on: bool
+
+
+class ReminderBody(BaseModel):
+    op: Literal["add", "update", "done", "remove"]
+    id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}$")
+    text: str | None = Field(default=None, max_length=300)
+    when: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
+    done: bool | None = None
+
+
+class LightBody(BaseModel):
+    device: str = Field(min_length=1, max_length=40)
+    power: Literal["on", "off", "toggle"] | None = None
+    brightness: int | None = Field(default=None, ge=1, le=100)
+    color: str | None = Field(default=None, max_length=12)
+    temperature: Literal["warm", "white", "cool"] | None = None
+
+
+class FriendBody(BaseModel):
+    op: Literal["add", "remove", "trust", "untrust"]
+    id: str = Field(min_length=17, max_length=20, pattern=r"^\d+$")
+    name: str = Field(default="", max_length=32)
+
+
 class ThinkingBody(BaseModel):
     mode: Literal["on", "off", "toggle"]
 
 
 class SettingsBody(BaseModel):
-    values: dict[str, bool | int | float | str] = Field(min_length=1, max_length=60)
+    values: dict[str, bool | int | float | str] = Field(min_length=1, max_length=300)
 
 
 class ResetBody(BaseModel):
-    keys: list[str] = Field(default_factory=list, max_length=60)
+    keys: list[str] = Field(default_factory=list, max_length=300)
 
 
 class GifBody(BaseModel):
@@ -180,9 +217,17 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
     async def restart_bot() -> dict[str, Any]:
         return await t.restart_bot()
 
+    @app.post("/api/tools/bot-power")
+    async def bot_power(body: PowerBody) -> dict[str, Any]:
+        return await t.bot_power(body.on)
+
     @app.post("/api/tools/restart-ollama")
     async def restart_ollama() -> dict[str, Any]:
         return await t.restart_ollama()
+
+    @app.post("/api/tools/wake")
+    async def wake() -> dict[str, Any]:
+        return await t.wake()
 
     @app.post("/api/tools/thinking")
     async def thinking(body: ThinkingBody) -> dict[str, Any]:
@@ -220,11 +265,35 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
     async def gifs_export_pc() -> dict[str, Any]:
         return await t.gifs_export_pc()
 
+    @app.get("/api/reminders")
+    async def reminders() -> dict[str, Any]:
+        return await t.reminders()
+
+    @app.post("/api/reminders")
+    async def reminders_apply(body: ReminderBody) -> dict[str, Any]:
+        return await t.reminders_apply(body.model_dump(exclude_unset=True))
+
+    @app.get("/api/lights")
+    async def lights() -> dict[str, Any]:
+        return await t.lights()
+
+    @app.post("/api/lights")
+    async def lights_apply(body: LightBody) -> dict[str, Any]:
+        return await t.lights_apply(body.model_dump(exclude_none=True))
+
+    @app.get("/api/friends")
+    async def friends() -> dict[str, Any]:
+        return await t.friends()
+
+    @app.post("/api/friends")
+    async def friends_apply(body: FriendBody) -> dict[str, Any]:
+        return await t.friends_apply(body.op, body.id, body.name)
+
     @app.post("/api/tools/say")
     async def say(body: SayBody) -> dict[str, Any]:
         return await t.say(body.text, body.channel)
 
-    @app.get("/api/persona")
+    @app.post("/api/persona")
     async def persona_get() -> dict[str, Any]:
         return await t.persona_get()
 
@@ -232,13 +301,17 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
     async def persona_put(body: TextBody) -> dict[str, Any]:
         return await t.persona_put(body.content)
 
-    @app.get("/api/memory")
+    @app.post("/api/memory")
     async def memory_get() -> dict[str, Any]:
         return await t.memory_get()
 
     @app.put("/api/memory")
     async def memory_put(body: TextBody) -> dict[str, Any]:
         return await t.memory_put(body.content)
+
+    @app.get("/api/prompt")
+    async def prompt_info() -> dict[str, Any]:
+        return await t.prompt_info()
 
     @app.get("/api/memory/list")
     async def memory_list(who: str | None = Query(default=None, max_length=40)) -> dict[str, Any]:
@@ -286,13 +359,13 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
                     await socket.receive_text()  # we only listen for the close
 
         reader_task = asyncio.create_task(reader())
+        getter = None
         try:
             await socket.send_json({"type": "snapshot", "data": {"config": client_config(), **mon.snapshot()}})
             while not reader_task.done():
                 getter = asyncio.create_task(sub.queue.get())
                 done, _ = await asyncio.wait({getter, reader_task}, return_when=asyncio.FIRST_COMPLETED)
                 if getter not in done:
-                    getter.cancel()
                     break
                 items = [getter.result()]
                 while not sub.queue.empty() and len(items) < 500:
@@ -308,9 +381,14 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
-            reader_task.cancel()
             mon.unsubscribe(sub)
+            tasks = (reader_task,) if getter is None else (reader_task, getter)
+            for task in tasks:
+                task.cancel()
+            # ASGI cancellation can arrive again while the socket tasks are winding down.
+            with CancelScope(shield=True):
+                await asyncio.gather(*tasks, return_exceptions=True)
 
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+    app.mount("/", NoCacheStatic(directory=STATIC_DIR, html=True), name="static")
     app.add_middleware(LocalOnlyMiddleware, port=cfg.listen_port)
     return app

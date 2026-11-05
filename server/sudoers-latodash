@@ -7,3 +7,6 @@ YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/bin/systemctl restart ollama.servi
 YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/bin/lato-say
 YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/sbin/lato-persona-install
 YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/sbin/lato-set-model
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/bin/systemctl enable --now latochan.service
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/bin/systemctl disable --now latochan.service
+YOUR_DASHBOARD_USER ALL=(root) NOPASSWD: /usr/local/bin/lato-reminders-edit

@@ -6,6 +6,7 @@ so the dashboard folder can be moved or copied without editing paths.
 from __future__ import annotations
 
 import sys
+from ipaddress import ip_address
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover - exercised only on Python 3.10
     import tomli as tomllib
+
+from .wol import parse_mac
 
 
 class ConfigError(ValueError):
@@ -36,16 +39,12 @@ class ServerConfig:
     bot_unit: str = "latochan.service"
     ollama_unit: str = "ollama.service"
     extra_units: tuple[str, ...] = (
-        "gpu-watchdog.service",
-        "gpu-fan.service",
-        "gpu-tune.service",
         "lato-reminders.timer",
-        "lato-memory-reminder.timer",
     )
-    ollama_host: str = "127.0.0.1"
+    ollama_host: str = "localhost"
     ollama_port: int = 11434
     persona_path: str = "/etc/latochan/persona.md"
-    default_model: str = "latochan"
+    default_model: str = "llama3.1:8b"
     num_ctx: int = 8192
     main_channel_id: str = ""
     backfill_hours: int = 24
@@ -56,9 +55,19 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class WakeConfig:
+    """Wake-on-LAN: lets the dashboard power the server on from this PC (see latodash/wol.py)."""
+    mac: str = ""            # the server's network card, empty = Wake button disabled
+    broadcast: str = ""      # empty = the server's /24 broadcast address (a.b.c.255) plus limited broadcast
+    port: int = 9
+
+
+@dataclass(frozen=True)
 class Thresholds:
     gpu_junction_warn: float = 95.0
     gpu_junction_crit: float = 100.0
+    gpu_edge_warn: float = 85.0      # NVIDIA has no hotspot sensor: alert on core temperature instead
+    gpu_edge_crit: float = 92.0
     reply_pending_warn_s: float = 120.0
     reply_pending_crit_s: float = 300.0
     generation_stall_s: float = 180.0
@@ -73,7 +82,8 @@ class AppConfig:
     ssh: SSHConfig
     server: ServerConfig = field(default_factory=ServerConfig)
     thresholds: Thresholds = field(default_factory=Thresholds)
-    listen_host: str = "127.0.0.1"
+    wake: WakeConfig = field(default_factory=WakeConfig)
+    listen_host: str = "localhost"
     listen_port: int = 8765
     open_browser: bool = True
     latochan_dir: Path | None = None  # PC folder that keeps local copies of persona/memory
@@ -127,17 +137,28 @@ def load_config(path: Path) -> AppConfig:
         server_raw = {**server_raw, "extra_units": tuple(server_raw["extra_units"])}
     server = ServerConfig(**_pick(server_raw, ServerConfig))
     thresholds = Thresholds(**_pick(_section(data, "thresholds"), Thresholds))
+    wake = WakeConfig(**_pick(_section(data, "wake"), WakeConfig))
+    if wake.mac:
+        try:
+            parse_mac(wake.mac)
+        except ValueError as exc:
+            raise ConfigError(f"[wake] mac: {exc}") from exc
 
     app_raw = _section(data, "app")
     latochan_dir = app_raw.get("latochan_dir")
-    app_kwargs = _pick(app_raw, AppConfig, skip=("ssh", "server", "thresholds", "latochan_dir"))
+    app_kwargs = _pick(app_raw, AppConfig, skip=("ssh", "server", "thresholds", "wake", "latochan_dir"))
     cfg = AppConfig(
         ssh=ssh,
         server=server,
         thresholds=thresholds,
+        wake=wake,
         latochan_dir=_path(base, latochan_dir, "app.latochan_dir") if latochan_dir else None,
         **app_kwargs,
     )
-    if cfg.listen_host not in ("127.0.0.1", "localhost", "::1"):
+    try:
+        loopback = cfg.listen_host == "localhost" or ip_address(cfg.listen_host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
         raise ConfigError("app.listen_host must be a loopback address; the dashboard can restart services")
     return cfg

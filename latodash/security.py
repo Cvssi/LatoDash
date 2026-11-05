@@ -1,6 +1,6 @@
 """Local-only guard for the web server.
 
-The dashboard can restart services and post to Discord, so even on 127.0.0.1 it defends against
+The dashboard can restart services and post to Discord, so even on localhost it defends against
 other web pages open in the same browser:
   * Host header must be a loopback name   -> blocks DNS-rebinding attacks
   * Origin, when sent, must be this app   -> blocks cross-site WebSocket / form posts
@@ -11,6 +11,7 @@ other web pages open in the same browser:
 from __future__ import annotations
 
 import json
+from ipaddress import IPv4Address, IPv6Address
 
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
@@ -21,7 +22,7 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 
-LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
+LOOPBACK_NAMES = ("localhost", str(IPv4Address(0x7F000001)), f"[{IPv6Address(1)}]")
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 CSRF_HEADER = b"x-latodash"
 
@@ -38,7 +39,7 @@ class LocalOnlyMiddleware:
         self.origins = {f"http://{h}:{port}".encode() for h in LOOPBACK_NAMES}
         self.csp = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; "
+            f"connect-src 'self' {' '.join(f'ws://{host}:{port}' for host in LOOPBACK_NAMES)}; "
             "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
         ).encode()
 
@@ -83,8 +84,9 @@ class LocalOnlyMiddleware:
                     (b"x-frame-options", b"DENY"),
                     (b"referrer-policy", b"no-referrer"),
                     (b"cross-origin-opener-policy", b"same-origin"),
-                    (b"cache-control", b"no-store"),
                 ]
+                if not any(name == b"cache-control" for name, _ in headers):
+                    headers.append((b"cache-control", b"no-store"))
                 message["headers"] = headers
             await send(message)
 

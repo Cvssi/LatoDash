@@ -128,7 +128,7 @@ export class TimeChart extends CanvasChart {
       const x = X(best.t);
       ctx.strokeStyle = css("--line-2");
       ctx.beginPath(); ctx.moveTo(x + 0.5, pad.t); ctx.lineTo(x + 0.5, hgt - pad.b); ctx.stroke();
-      const tf = o.timeFmt || ((t) => new Date(t * 1000).toLocaleTimeString("en-GB"));
+      const tf = o.timeFmt || ((t) => new Date(t * 1000).toLocaleTimeString());
       this._showTip(x, 0, [[null, tf(best.t)], ...o.series.map((s) => [s.color, `${s.label}: ${s.fmt ? s.fmt(s.value(best)) : s.value(best)}`]),
         ...(o.extraTip ? o.extraTip(best) : [])]);
     }

@@ -12,7 +12,7 @@ CFG = AppConfig(ssh=SSHConfig(host="h", user="u", key_file=Path("k"), known_host
 
 @pytest.fixture()
 def client():
-    with TestClient(create_app(CFG, demo_runtime(CFG)), base_url="http://127.0.0.1:8765") as c:
+    with TestClient(create_app(CFG, demo_runtime(CFG)), base_url="http://localhost:8765") as c:
         yield c
 
 
@@ -21,6 +21,8 @@ def test_page_and_headers(client):
     assert r.status_code == 200 and "LatoDash" in r.text
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["cache-control"] == "no-cache"
+    assert client.get("/api/health").headers["cache-control"] == "no-store"
 
 
 def test_dns_rebinding_blocked(client):
@@ -37,14 +39,23 @@ def test_csrf_header_required(client):
     assert client.post("/api/tools/restart-bot", headers={"x-latodash": "1"}).status_code == 200
 
 
+@pytest.mark.parametrize("path", ["/api/persona", "/api/memory"])
+def test_pulling_a_pc_copy_requires_a_mutation_request(client, path):
+    assert client.get(path).status_code in (404, 405)
+    assert client.post(path).status_code == 403
+    response = client.post(path, headers={"x-latodash": "1"})
+    assert response.status_code == 200 and response.json()["content"]
+
+
 def test_websocket_origin(client):
     from starlette.websockets import WebSocketDisconnect
     with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("ws://127.0.0.1:8765/ws", headers={"origin": "http://evil.example"}) as ws:
+        with client.websocket_connect("ws://localhost:8765/ws", headers={"origin": "http://evil.example"}) as ws:
             ws.receive_json()
-    with client.websocket_connect("ws://127.0.0.1:8765/ws", headers={"origin": "http://127.0.0.1:8765"}) as ws:
-        msg = ws.receive_json()
-        assert msg["type"] == "snapshot" and msg["data"]["config"]["demo"] is True
+    for _ in range(50):
+        with client.websocket_connect("ws://localhost:8765/ws", headers={"origin": "http://localhost:8765"}) as ws:
+            msg = ws.receive_json()
+            assert msg["type"] == "snapshot" and msg["data"]["config"]["demo"] is True
 
 
 def test_validation(client):

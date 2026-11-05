@@ -14,6 +14,54 @@ const DEPENDS = {
   chatter_reply_chance: SLEEP,
 };
 
+// The chatter mix: four shares of one pie, shown as a single control that always adds up to 100%.
+const MIX = [
+  { key: "mix_ignore", label: "On read", tone: "muted" },
+  { key: "mix_react", label: "React", tone: "info" },
+  { key: "mix_gif", label: "Gif", tone: "warn" },
+  { key: "mix_reply", label: "Reply", tone: "ok" },
+];
+const MIX_KEYS = MIX.map((m) => m.key);
+
+// Set one share and rebalance the others so the total stays 100. Moving any share takes from / gives to "Reply"
+// first, then the rest (last first); moving "Reply" itself spreads the difference over the others in proportion.
+export function rebalance(values, key, want, step = 5) {
+  const v = Object.fromEntries(MIX_KEYS.map((k) => [k, Math.max(0, Math.round(Number(values[k]) || 0))]));
+  const total = MIX_KEYS.reduce((a, k) => a + v[k], 0);
+  if (total !== 100) {                 // fix up odd values from the file first (scale, remainder to reply)
+    const t = total || 1;
+    for (const k of MIX_KEYS) v[k] = total ? Math.round((v[k] * 100) / t / step) * step : (k === "mix_reply" ? 100 : 0);
+    v.mix_reply += 100 - MIX_KEYS.reduce((a, k) => a + v[k], 0);
+  }
+  want = Math.min(100, Math.max(0, Math.round(want / step) * step));
+  let delta = want - v[key];           // > 0: others give, < 0: others receive
+  v[key] = want;
+  const others = MIX_KEYS.filter((k) => k !== key);
+  if (key !== "mix_reply") {
+    const order = ["mix_reply", ...others.filter((k) => k !== "mix_reply").reverse()];
+    for (const k of order) {
+      if (!delta) break;
+      const d = delta > 0 ? Math.min(delta, v[k]) : delta;
+      v[k] -= d; delta -= d;
+    }
+  } else {
+    const pool = others.reduce((a, k) => a + v[k], 0);
+    let left = delta;
+    others.forEach((k, i) => {
+      let d = i === others.length - 1 ? left
+        : delta > 0 ? Math.round(((pool ? v[k] / pool : 1 / others.length) * delta) / step) * step
+          : Math.round(((pool ? v[k] / pool : (k === "mix_ignore" ? 1 : 0)) * delta) / step) * step;
+      d = delta > 0 ? Math.min(d, v[k]) : d;
+      v[k] -= d; left -= d;
+    });
+    if (left) {                        // couldn't place it all (others hit 0): cap the share that moved
+      v[key] -= left;
+    }
+  }
+  for (const k of MIX_KEYS) v[k] = Math.max(0, v[k]);
+  return v;
+}
+
 const num = (v) => String(Number(Number(v).toFixed(3)));
 function show(spec, v) {
   if (spec.kind === "bool") return v ? "on" : "off";
@@ -68,6 +116,48 @@ export function mount(root) {
     } };
   }
 
+  function makeMix(specs) {
+    const by = Object.fromEntries(specs.map((s) => [s.key, s]));
+    const segs = MIX.map((m) => h("div", { class: `mix-seg tone-${m.tone}`, title: by[m.key].label }));
+    const legend = MIX.map((m) => h("span", { class: "mix-key" }, h("i", { class: `tone-${m.tone}` }), m.label, h("b", { class: "num" })));
+    const reset = h("button", { class: "btn ghost sm set-reset", title: "Back to default (always reply)", "aria-label": "Back to default" }, icon(ICONS.restart));
+    reset.onclick = () => { for (const k of MIX_KEYS) draft[k] = by[k].default; syncAll(); };
+    const sliders = MIX.map((m) => {
+      const spec = by[m.key];
+      const input = h("input", { type: "range", min: 0, max: 100, step: spec.step || 5, "aria-label": spec.label });
+      const out = h("span", { class: "set-val" });
+      input.oninput = () => { Object.assign(draft, rebalance(draft, m.key, Number(input.value), spec.step || 5)); syncAll(); };
+      const row = h("div", { class: "mix-row" },
+        h("div", {}, h("div", { class: "set-name" }, h("i", { class: `mix-dot tone-${m.tone}` }), spec.label), h("div", { class: "set-help" }, spec.help)),
+        h("div", { class: "set-ctl" }, input, out));
+      return { key: m.key, row, input, out };
+    });
+    const row = h("div", { class: "set-row mix" },
+      h("div", { class: "mix-head" },
+        h("div", {}, h("div", { class: "set-name" }, "When she overhears chatter"),
+          h("div", { class: "set-help" }, "Drag any slider; the others make room so it always adds up to 100%.")),
+        reset),
+      h("div", { class: "mix-bar", role: "img" }, ...segs),
+      h("div", { class: "mix-legend" }, ...legend),
+      ...sliders.map((s) => s.row));
+    return { row, sync() {
+      const vals = MIX.map((m) => Number(draft[m.key]) || 0);
+      const total = vals.reduce((a, b) => a + b, 0) || 1;
+      MIX.forEach((m, i) => {
+        const pct = Math.round((vals[i] * 100) / total);
+        segs[i].style.width = `${(vals[i] * 100) / total}%`;
+        segs[i].textContent = pct >= 12 ? `${m.label} ${pct}%` : "";
+        legend[i].querySelector("b").textContent = `${pct}%`;
+        sliders[i].input.value = vals[i];
+        sliders[i].out.textContent = `${pct}%`;
+        sliders[i].row.dataset.dirty = String(draft[m.key] !== saved[m.key]);
+      });
+      row.querySelector(".mix-bar").setAttribute("aria-label", MIX.map((m, i) => `${m.label} ${Math.round((vals[i] * 100) / total)}%`).join(", "));
+      row.dataset.changed = String(MIX_KEYS.some((k) => draft[k] !== by[k].default));
+      row.dataset.dirty = String(MIX_KEYS.some((k) => draft[k] !== saved[k]));
+    } };
+  }
+
   function syncAll() {
     for (const r of rows.values()) r.sync();
     const n = changedKeys().length;
@@ -78,17 +168,20 @@ export function mount(root) {
 
   function renderStatus() {
     const v = draft;
-    status.replaceChildren(
+    status.replaceChildren(...[
       pill(v.thinking ? "Thinking on" : "Thinking off", v.thinking ? "warn" : ""),
       pill(v.sleep_mode ? "Sleep mode on" : "Always awake", v.sleep_mode ? "info" : "warn"),
-      pill(!v.gifs_enabled ? "Gifs off" : v.gif_only ? "Gif mode: gifs only" : `Gifs ${v.gif_reply_chance}% of replies`, !v.gifs_enabled ? "warn" : v.gif_only ? "accent" : ""));
+      pill(!v.gifs_enabled ? "Gifs off" : v.gif_only ? "Gif mode: gifs only" : `Gifs ${v.gif_reply_chance}% of replies`, !v.gifs_enabled ? "warn" : v.gif_only ? "accent" : ""),
+      v.mix_reply !== undefined && v.mix_reply < 100 ? pill(`Chatter: replies ${v.mix_reply}%`, "info") : null].filter(Boolean));
   }
 
   function build() {
     rows.clear();
     const cards = doc.groups.map((g) => {
       const specs = doc.schema.filter((s) => s.group === g.id);
-      const list = specs.map((s) => { const r = makeRow(s); rows.set(s.key, r); return r.row; });
+      const mixSpecs = specs.filter((s) => MIX_KEYS.includes(s.key));
+      const list = specs.filter((s) => !MIX_KEYS.includes(s.key)).map((s) => { const r = makeRow(s); rows.set(s.key, r); return r.row; });
+      if (mixSpecs.length === MIX_KEYS.length) { const r = makeMix(mixSpecs); rows.set("mix", r); list.unshift(r.row); }
       return h("div", { class: "card tool-card" },
         h("div", { class: "card-head" }, h("div", { class: "card-title" }, h("span", { class: "dot" }), g.label)),
         g.help ? h("p", { class: "desc" }, g.help) : null, ...list);

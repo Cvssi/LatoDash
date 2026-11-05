@@ -39,6 +39,7 @@ export function icon(path, cls = "") {
 
 export const ICONS = {
   restart: "M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7",
+  power: "M11 3h2v10h-2zm5.6 2.4 1.4-1.4A9 9 0 1 1 6 4l1.4 1.4A7 7 0 1 0 16.6 5.4",
   download: "M5 20h14v-2H5zm7-3 6-6h-4V3h-4v8H6z",
   upload: "M5 20h14v-2H5zM12 3 6 9h4v6h4V9h4z",
   send: "M3 20.5 21 12 3 3.5v6.6L15 12 3 13.9z",

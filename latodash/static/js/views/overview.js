@@ -34,6 +34,27 @@ function stat(k) {
   return { el: h("div", { class: "stat" }, h("div", { class: "k" }, k), v), v };
 }
 
+// One compact panel per GPU, used when the server has several cards.
+function gpuPanel(x, primary) {
+  const temp = x.temp_junction ?? x.temp_edge;
+  const vp = x.vram_total ? (100 * x.vram_used) / x.vram_total : null;
+  const cell = (k, v, cls = "") => h("div", { class: "stat" }, h("div", { class: "k" }, k), h("div", { class: `v ${cls}` }, v));
+  const hot = x.temp_junction != null ? x.temp_junction >= 100 ? "crit" : x.temp_junction >= 95 ? "warn" : "" : temp >= 92 ? "crit" : temp >= 85 ? "warn" : "";
+  const fan = x.fan_rpm != null ? `${f.num(x.fan_rpm)} rpm` : x.fan_pct != null ? `${x.fan_pct}%` : "—";
+  return h("div", { class: "gpu-panel", dataset: { primary: primary ? "1" : "0" } },
+    h("div", { class: "row" }, h("b", {}, (x.name || "GPU").replace("NVIDIA GeForce ", "").replace("Radeon RX ", "")),
+      h("span", { class: "spacer" }), h("span", { class: "muted small" }, primary ? "inference" : x.vendor === "amd" ? "idle / spare" : "")),
+    h("div", { class: "gpu-big" }, h("span", { class: "num" }, f.pct(x.busy)), h("small", {}, "busy")),
+    h("div", { class: "stats gpu-stats" },
+      cell("Temp", x.temp_junction != null ? `${f.temp(temp)} · edge ${f.temp(x.temp_edge)}` : f.temp(temp), hot),
+      cell("Power", x.power_w == null ? "—" : `${x.power_w} / ${x.power_cap_w ?? "?"} W`),
+      cell("Fan", fan),
+      cell("Clocks", `${x.sclk_mhz ?? "—"} / ${x.mclk_mhz ?? "—"} MHz`)),
+    h("div", { class: "row small muted" }, "VRAM", h("span", { class: "spacer" }),
+      h("span", { class: "num small" }, x.vram_total ? `${f.bytes(x.vram_used)} / ${f.bytes(x.vram_total, 0)} · ${f.pct(vp)}` : "—")),
+    h("div", { class: "bar-line" }, h("i", { style: `width:${vp ?? 0}%${vp > 98.5 ? ";background:var(--crit)" : ""}` })));
+}
+
 export function mount(root) {
   // ---- KPI row
   const k = {
@@ -66,14 +87,16 @@ export function mount(root) {
                  ollama: stat("Ollama RSS"), bot: stat("Bot RSS") };
   const vramBar = h("div", { class: "bar-line" }, h("i"));
   const vramText = h("span", { class: "num small" }, "—");
+  const gpuMulti = h("div", { class: "gpu-multi", hidden: true });   // one panel per card when several GPUs exist
   const cores = h("div", { class: "cores" });
   const cpuCanvas = h("canvas", { class: "chart" }), gpuCanvas = h("canvas", { class: "chart" }), netCanvas = h("canvas", { class: "chart" });
 
   const cpuCard = card("CPU", [h("div", { class: "hw" }, cpuG.el, h("div", { class: "stats" }, Object.values(cpuS).map((s) => s.el))), cores, cpuCanvas],
     { sub: "Xeon E5-2680 v4 · 14c/28t" });
-  const gpuCard = card("GPU", [h("div", { class: "hw" }, gpuG.el, h("div", { class: "stats" }, Object.values(gpuS).map((s) => s.el))),
-    h("div", { class: "section-gap" }, h("div", { class: "row small muted" }, "VRAM", h("span", { class: "spacer" }), vramText), vramBar), gpuCanvas],
-    { sub: "Radeon RX Vega 56" });
+  const gpuSingle = h("div", {}, h("div", { class: "hw" }, gpuG.el, h("div", { class: "stats" }, Object.values(gpuS).map((s) => s.el))),
+    h("div", { class: "section-gap" }, h("div", { class: "row small muted" }, "VRAM", h("span", { class: "spacer" }), vramText), vramBar));
+  const gpuCard = card("GPU", [gpuSingle, gpuMulti, gpuCanvas], { sub: "waiting for data" });
+  const gpuSub = gpuCard.querySelector(".card-sub");
   const memCard = card("Memory · Disk · Network", [h("div", { class: "hw" }, memG.el, h("div", { class: "stats" }, Object.values(memS).map((s) => s.el))), netCanvas],
     { sub: "32 GB DDR4 ECC" });
 
@@ -155,12 +178,18 @@ export function mount(root) {
     gpuS.junction.v.className = `v ${g.temp_junction >= 100 ? "crit" : g.temp_junction >= 95 ? "warn" : ""}`;
     gpuS.edge.v.textContent = `${f.temp(g.temp_edge)} / ${f.temp(g.temp_mem)}`;
     gpuS.power.v.textContent = g.power_w == null ? "—" : `${g.power_w} / ${g.power_cap_w ?? "?"} W`;
-    gpuS.fan.v.textContent = g.fan_rpm == null ? "—" : `${f.num(g.fan_rpm)} rpm${g.fan_pct != null ? ` · ${g.fan_pct}%` : ""}`;
+    gpuS.fan.v.textContent = g.fan_rpm == null ? (g.fan_pct == null ? "—" : `${g.fan_pct}%`) : `${f.num(g.fan_rpm)} rpm${g.fan_pct != null ? ` · ${g.fan_pct}%` : ""}`;
     gpuS.clocks.v.textContent = `${g.sclk_mhz ?? "—"} / ${g.mclk_mhz ?? "—"} MHz`;
     gpuS.volt.v.textContent = g.vddgfx_mv == null ? "—" : `${g.vddgfx_mv} mV`;
     const vp = g.vram_total ? (100 * g.vram_used) / g.vram_total : null;
     vramBar.firstChild.style.width = `${vp ?? 0}%`;
     vramBar.firstChild.style.background = vp > 98.5 ? css("--crit") : "";
+    const cards = g.gpus || [];
+    const multi = cards.length > 1;
+    gpuSingle.hidden = multi;
+    gpuMulti.hidden = !multi;
+    if (multi) gpuMulti.replaceChildren(...cards.map((x, i) => gpuPanel(x, i === 0)));
+    gpuSub.textContent = cards.length ? cards.map((x) => x.name || x.vendor).join(" + ").replace(/NVIDIA GeForce /g, "") : "";
     vramText.textContent = g.vram_total ? `${f.bytes(g.vram_used)} / ${f.bytes(g.vram_total)} · ${f.pct(vp)}` : "—";
     const mp = mem.total ? (100 * mem.used) / mem.total : null;
     memG.set(mp, f.pct(mp), "ram used", tone(mp, 85, 95));

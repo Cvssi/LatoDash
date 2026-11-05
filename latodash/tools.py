@@ -1,18 +1,20 @@
-"""The LatoChan admin tools, as server actions the web UI can call.
+"""The LatoChan .bat tools, as server actions the web UI can call.
 
-    Restart LatoChan                -> restart_bot()
-    Thinking toggle                 -> thinking("toggle" | "on" | "off")
-    Download persona from server    -> persona_get()   (also refreshes the local copy)
-    Upload persona to server        -> persona_put()   (server keeps a timestamped .bak)
+    Restart LatoChan.bat            -> restart_bot()
+    (on/off switch)                 -> bot_power(True | False)
+    LatoChan thinking toggle.bat    -> thinking("toggle" | "on" | "off")
+    Download persona from server    -> persona_get()   (also refreshes the PC copy, like the .bat)
+    Upload persona to server        -> persona_put()   (server keeps a timestamped .bak, like the .bat)
     Download memory from server     -> memory_get()    (also refreshes latochan-memory.txt on the PC)
     Upload memory to server         -> memory_put()    (lato-memory import backs up the DB itself)
-    Live brain view                 -> the CLI tab (live journal stream)
+    LatoChan brain.bat              -> the CLI tab (live journal stream)
   plus: restart Ollama, list notes, post as LatoChan (lato-say), load/unload models.
 
-Every command string here is fixed; anything the user typed goes over stdin only.
+Commands use fixed templates. Free-form text goes over stdin; command arguments are validated and quoted.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -27,6 +29,7 @@ from .config import AppConfig
 from .monitor import Monitor
 from .ollama import OllamaClient, OllamaError, valid_model
 from .sshlink import LinkDown, RunResult, SSHLink
+from .wol import LIMITED_BROADCAST, default_broadcast, send_magic_packet
 
 MAX_PERSONA_BYTES = 256 * 1024
 MAX_MEMORY_BYTES = 512 * 1024
@@ -35,6 +38,11 @@ PERSONA_HELPER = "/usr/local/sbin/lato-persona-install"
 MODEL_HELPER = "/usr/local/sbin/lato-set-model"
 _SUDO_PW = re.compile(r"a password is required|a terminal is required|no tty present", re.I)
 _CHANNEL = re.compile(r"^\d{15,22}$")
+_USER_ID = re.compile(r"^\d{17,20}$")
+LIGHTS_CMD = "/usr/local/sbin/lato-lights"
+REMINDERS_CMD = "/usr/local/bin/lato-reminders-edit"
+LIGHT_COLORS = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "magenta")
+LIGHT_TEMPS = ("warm", "white", "cool")
 _WHO = re.compile(r"^[\w .'-]{1,40}$")
 _SETTING_KEY = re.compile(r"^[a-z_]{1,40}$")
 _MOOD = re.compile(r"^[a-z_]{1,24}$")
@@ -88,7 +96,7 @@ class Tools:
         return res
 
     def _save_local(self, name: str, content: str) -> str | None:
-        """Keep a local copy next to the bot sources, previous one as <name>.pc-backup."""
+        """Mirror of the .bat behaviour: keep a PC copy, previous one as <name>.pc-backup."""
         d = self.cfg.latochan_dir
         if not d or not d.is_dir():
             return None
@@ -119,6 +127,24 @@ class Tools:
         self.mon.add_event("info", "tool", "LatoChan restarted")
         return {"ok": True, "output": res.stdout.strip()}
 
+    async def bot_power(self, on: bool) -> dict[str, Any]:
+        """Turn LatoChan on or off. Off = stopped AND disabled, so she stays off after a server reboot until
+        switched back on here. The two commands are fixed strings so the sudoers rule can match them exactly."""
+        unit = shlex.quote(self.cfg.server.bot_unit)
+        if on:
+            self.mon.add_event("warn", "tool", "Turning LatoChan on…")
+            res = await self._run("turn LatoChan on", f"sudo -n systemctl enable --now {unit} && sleep 5 && "
+                                  f"systemctl is-active {unit} && journalctl -u {unit} -n 3 --no-pager -o cat", timeout=60)
+        else:
+            self.mon.add_event("warn", "tool", "Turning LatoChan off…")
+            await self._run("turn LatoChan off", f"sudo -n systemctl disable --now {unit}", timeout=60)
+            res = await self._run("check LatoChan stopped", f"systemctl is-active {unit}", ok_codes=(0, 3))
+            if res.exit_status == 0:
+                raise ToolError(502, "LatoChan is still active after disabling it", res.stdout.strip())
+        state = (res.stdout.strip().splitlines() or ["?"])[0 if on else -1]
+        self.mon.add_event("info", "tool", f"LatoChan is {'ON' if on else 'OFF'} ({state})")
+        return {"ok": True, "on": on, "state": state, "output": res.stdout.strip()}
+
     async def restart_ollama(self) -> dict[str, Any]:
         unit = shlex.quote(self.cfg.server.ollama_unit)
         self.mon.add_event("warn", "tool", "Restarting Ollama… (model will reload on next message)")
@@ -126,6 +152,24 @@ class Tools:
                               f"sudo -n systemctl restart {unit} && sleep 3 && systemctl is-active {unit}", timeout=90)
         self.mon.add_event("info", "tool", "Ollama restarted")
         return {"ok": True, "output": res.stdout.strip()}
+
+    async def wake(self) -> dict[str, Any]:
+        """Power the server on with Wake-on-LAN. Runs on this PC (no SSH: the server is off), so it needs the
+        server's MAC in config.toml and only works on the same LAN."""
+        w = self.cfg.wake
+        if not w.mac:
+            raise ToolError(422, "No MAC address set. Add [wake] mac to config.toml "
+                                 "(the server's network card; run `ip -br link` on the server to see it).")
+        targets = [w.broadcast] if w.broadcast else [default_broadcast(self.cfg.ssh.host), LIMITED_BROADCAST]
+        try:
+            sent = await asyncio.to_thread(send_magic_packet, w.mac, targets, w.port)
+        except OSError as exc:
+            self.mon.add_event("error", "tool", f"Wake-on-LAN failed: {exc}")
+            raise ToolError(502, str(exc)) from exc
+        self.mon.add_event("warn", "tool", f"Wake-on-LAN packet sent to {', '.join(sent)} - the server takes ~1-2 min to boot")
+        return {"ok": True, "sent_to": sent,
+                "output": f"Magic packet sent to {', '.join(sent)}. If the server is shut down and Wake-on-LAN is "
+                          "enabled it boots in a minute or two; LatoChan starts on her own."}
 
     async def thinking(self, mode: str) -> dict[str, Any]:
         if mode not in ("on", "off", "toggle"):
@@ -141,8 +185,8 @@ class Tools:
         res = await self._run(label, command, input=input, timeout=timeout, ok_codes=(0, 1))
         if res.exit_status == 1:
             msg = (res.stderr or res.stdout).strip()
-            if msg.startswith('partial update:'):
-                raise ToolError(409, 'Some GIF changes were saved before a storage error. Refresh the library before retrying.', msg[-600:])
+            if msg.startswith("partial update:"):
+                raise ToolError(409, "Some GIF changes may have been saved. Refresh the library before retrying.", msg[-600:])
             if msg.startswith("rejected:"):
                 raise ToolError(422, msg[len("rejected:"):].strip() or "rejected")
             self.mon.add_event("error", "tool", f"{label} failed: {msg[:200]}")
@@ -279,7 +323,7 @@ class Tools:
     async def persona_get(self) -> dict[str, Any]:
         info = await self._persona_info()
         res = await self._run('download persona', f'sudo -n {PERSONA_HELPER} --read', input='')
-        self._persona_cache = (time.monotonic(), res.stdout)
+        self._persona_cache = None
         saved = self._save_local('persona.md', res.stdout)
         self.mon.add_event('info', 'tool', 'Persona downloaded')
         return {'content': res.stdout, 'saved_to': saved, 'path': info['path']}
@@ -290,15 +334,27 @@ class Tools:
         data = await self._json_tool('upload persona', f'sudo -n {PERSONA_HELPER}', input=content, timeout=30)
         if data.get('protocol') != 2 or 'backup' not in data:
             raise ToolError(502, 'Unexpected persona helper response; inspect the server before retrying.')
-        self._persona_cache = (time.monotonic(), content)
+        self._persona_cache = None
         saved = self._save_local('persona.md', content)
         self.mon.add_event('info', 'tool', 'Persona uploaded; private backup retained on server')
         return {**data, 'saved_to': saved}
 
     async def persona_text(self, max_age: float = 120) -> str:
+        """Her full system prompt as the bot builds it (persona + rules + enabled modules), for the Brain CLI.
+        Falls back to the bare persona file on a server without lato-prompt."""
         if self._persona_cache and time.monotonic() - self._persona_cache[0] < max_age:
             return self._persona_cache[1]
-        return (await self.persona_get())['content']
+        try:
+            res = await self._run("read prompt", "lato-prompt --raw")
+        except ToolError:
+            res = await self._run("read persona", f"cat -- {shlex.quote(self.cfg.server.persona_path)}")
+        self._persona_cache = (time.monotonic(), res.stdout)
+        return res.stdout
+
+    async def prompt_info(self) -> dict[str, Any]:
+        """Size of each part of her system prompt (lato-prompt)."""
+        res = await self._run("prompt sizes", "lato-prompt")
+        return {"output": res.stdout.rstrip()}
 
     # -- memory -----------------------------------------------------------------------------------
     async def memory_get(self) -> dict[str, Any]:
@@ -332,6 +388,78 @@ class Tools:
         return {"output": res.stdout.rstrip()}
 
     # -- discord ----------------------------------------------------------------------------------
+    # -- reminders (the pinned "LatoChan state" message; lato-reminders-edit needs the bot token -> sudo) -----
+    async def reminders(self) -> dict[str, Any]:
+        return await self._json_tool("read reminders", f"sudo -n {REMINDERS_CMD}", input=json.dumps({"op": "list"}), timeout=30)
+
+    async def reminders_apply(self, op: dict[str, Any]) -> dict[str, Any]:
+        kind = op.get("op")
+        if kind not in ("add", "update", "done", "remove"):
+            raise ToolError(422, "op must be add, update, done or remove")
+        clean: dict[str, Any] = {"op": kind}
+        if kind != "add":
+            if not re.fullmatch(r"[0-9a-f]{8}", str(op.get("id") or "")):
+                raise ToolError(422, "which reminder?")
+            clean["id"] = op["id"]
+        if "text" in op and op["text"] is not None:
+            clean["text"] = check_text(op["text"], limit=300, what="reminder")
+        elif kind == "add":
+            raise ToolError(422, "reminder text is empty")
+        if "when" in op:
+            w = op["when"]
+            if w is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", str(w)):
+                raise ToolError(422, "time must look like 2026-11-09T10:00")
+            clean["when"] = w
+        if kind == "done":
+            clean["done"] = bool(op.get("done", True))
+        data = await self._json_tool(f"{kind} reminder", f"sudo -n {REMINDERS_CMD}", input=json.dumps(clean), timeout=30)
+        self.mon.add_event("info", "tool", f"Reminder {kind}: {clean.get('text', clean.get('id', ''))[:80]}")
+        return data
+
+    # -- lights (lato-lights on the server; key file is readable by owner, so no sudo) ------------
+    async def lights(self) -> dict[str, Any]:
+        return await self._json_tool("read lights", f"{LIGHTS_CMD} json", timeout=20)
+
+    async def lights_apply(self, op: dict[str, Any]) -> dict[str, Any]:
+        clean: dict[str, Any] = {}
+        dev = str(op.get("device") or "")
+        if not dev or len(dev) > 40:
+            raise ToolError(422, "which light?")
+        clean["device"] = dev
+        if op.get("power") is not None:
+            if op["power"] not in ("on", "off", "toggle"):
+                raise ToolError(422, "power must be on, off or toggle")
+            clean["power"] = op["power"]
+        if op.get("brightness") is not None:
+            b = op["brightness"]
+            if not isinstance(b, int) or isinstance(b, bool) or not 1 <= b <= 100:
+                raise ToolError(422, "brightness must be 1-100")
+            clean["brightness"] = b
+        for k, allowed in (("color", LIGHT_COLORS), ("temperature", LIGHT_TEMPS)):
+            if op.get(k) is not None:
+                if op[k] not in allowed:
+                    raise ToolError(422, f"unknown {k}")
+                clean[k] = op[k]
+        data = await self._json_tool("change light", f"{LIGHTS_CMD} apply", input=json.dumps(clean), timeout=20)
+        self.mon.add_event("info", "tool", f"Light {dev}: " + ", ".join(f"{k}={v}" for k, v in clean.items() if k != "device"))
+        return data
+
+    # -- friends (lato-friends on the server; the bot re-reads friends.json live) ----------------
+    async def friends(self) -> dict[str, Any]:
+        return await self._json_tool("read friends", "lato-friends json")
+
+    async def friends_apply(self, op: str, user_id: str, name: str = "") -> dict[str, Any]:
+        if op not in ("add", "remove", "trust", "untrust"):
+            raise ToolError(422, "op must be add, remove, trust or untrust")
+        if not _USER_ID.match(user_id or ""):
+            raise ToolError(422, "that isn't a Discord user ID (17-20 digits)")
+        name = check_text(name or "", limit=32, what="name", allow_empty=True).strip()
+        data = await self._json_tool(f"{op} friend", "lato-friends apply",
+                                     input=json.dumps({"op": op, "id": user_id, "name": name}))
+        done = {"add": "added", "remove": "removed", "trust": "marked trusted", "untrust": "no longer trusted"}[op]
+        self.mon.add_event("info", "tool", f"Friend {done}: {name or user_id}")
+        return data
+
     async def say(self, text: str, channel: str | None = None) -> dict[str, Any]:
         text = check_text(text, limit=2000, what="message")
         if len(text) > 2000:

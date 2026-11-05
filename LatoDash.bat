@@ -35,6 +35,6 @@ if errorlevel 1 (
   copy /y requirements.txt .venv\requirements.installed >nul
 )
 
-echo Starting LatoDash on http://127.0.0.1:8765  (close this window to stop it)
+echo Starting LatoDash on http://localhost:8765  (close this window to stop it)
 ".venv\Scripts\python.exe" -m latodash %*
 if errorlevel 1 pause

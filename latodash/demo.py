@@ -6,9 +6,10 @@ handy end-to-end exercise of the parsers.  Run with:  python -m latodash --demo
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import math
-import os
 import random
+import re
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -25,15 +26,15 @@ _cursor = 0
 GB = 1024 ** 3
 
 CHATS = [
-    ("owner", "lato what time is it in tokyo"),
-    ("owner", "did you remember to remind me about the form"),
-    ("alice", "lato you're mid"),
-    ("owner", "check this gif lol [sent gif]"),
-    ("bob", "latochan whats your fav minecraft block"),
-    ("owner", "ok ok im going to bed"),
+    ("owner", "What can you do?"),
+    ("alice", "What is a constellation?"),
+    ("bob", "Tell me a short joke."),
 ]
-REPLIES = ["its like 3am there. go to sleep -_-", "yeah yeah, 9pm. dont make me nag", "says you lol",
-           "lmao that cat has no thoughts behind its eyes", "copper. obviously", "night. dont doomscroll"]
+REPLIES = [
+    "I can chat, react, and help with simple tasks.",
+    "A constellation is a region of the sky.",
+    "A byte walks into a bar and orders a bit.",
+]
 
 
 def _entry(ts: float, unit: str, message: str, priority: int = 6, ident: str | None = None) -> dict[str, Any]:
@@ -50,7 +51,7 @@ def _py(ts: float, level: str, msg: str) -> str:
 
 def _gin(ts: float, status: int, latency: str, method: str, path: str) -> str:
     return (time.strftime("[GIN] %Y/%m/%d - %H:%M:%S", time.gmtime(ts))
-            + f' | {status} | {latency:>12} |       127.0.0.1 | {method:<8} "{path}"')
+            + f' | {status} | {latency:>12} |       localhost | {method:<8} "{path}"')
 
 
 def conversation(ts: float, task: int, who: str, text: str, reply: str, *, prompt_tok: int, gen_tok: int,
@@ -96,12 +97,16 @@ class DemoBot:
         self.gs: Any = None
         try:
             from .vendor import botsettings, gifstore
-            self.bs, self.gs = botsettings, gifstore
+            self.bs = botsettings
+            spec = importlib.util.spec_from_file_location(gifstore.__name__, gifstore.__file__)
+            self.gs = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(self.gs)
         except ImportError:
             return
         self.tmp = tempfile.TemporaryDirectory(prefix="latodash-demo-")
         self.settings_path = str(Path(self.tmp.name) / "settings.json")
-        os.environ["GIF_DIR"] = str(Path(self.tmp.name) / "gifs")   # gifstore reads this on every call
+        gif_root = Path(self.tmp.name) / "gifs"
+        self.gs.gif_dir = lambda: gif_root
         self.gs.apply("add", self.SAMPLE)
         self.ok = True
 
@@ -133,12 +138,13 @@ class DemoServer:
         self.busy_until = 0.0
         self.rng = random.Random(7)
         self.thinking = False
+        self.bot_off = False
         self.bot = DemoBot(cfg)
         self.persona = ("# LatoChan persona (demo)\n\nyou are latochan. all lowercase, short texts, playful, a bit sassy,"
                         " never cruel.\n")
-        self.memory = "# LatoChan memory export (demo)\n20\tbob\tlikes tea\n11\talice\tlikes chess\n"
+        self.memory = "# LatoChan memory export (demo)\n20\tbob\tlikes chess\n11\talice\tlikes tea\n"
         self.cli_jobs: list[tuple[float, list[dict[str, Any]]]] = []
-        self.live_model = "latochan"
+        self.live_model = "llama3.1:8b"
 
     def next_task(self) -> int:
         self.task += 3
@@ -147,9 +153,9 @@ class DemoServer:
     def backfill(self) -> None:
         now = time.time()
         entries: list[dict[str, Any]] = [
-            _entry(now - 20000, "latochan.service", _py(now - 20000, "INFO", "Logged in as LatoChan#8876, model=latochan, retrieval=False")),
+            _entry(now - 20000, "latochan.service", _py(now - 20000, "INFO", "Logged in as LatoChan, model=llama3.1:8b, retrieval=False")),
             _entry(now - 9000, "latochan.service", _py(now - 9000, "WARNING", "action PIN failed: Forbidden (missing Manage Messages)")),
-            _entry(now - 5400, "kernel", "amdgpu 0000:03:00.0: amdgpu: SMU: response:0xFFFFFFFF for index:18 param:0x00000005", 4, "kernel"),
+            _entry(now - 5400, "kernel", "amdgpu: synthetic GPU warning for dashboard demo", 4, "kernel"),
         ]
         entries[-1]["_TRANSPORT"] = "kernel"
         t = now - 23.5 * 3600
@@ -192,15 +198,16 @@ class DemoServer:
             since = int(now - 4300)
             s["services"] = {u: {"active": "active", "sub": "running" if u.endswith(".service") else "waiting",
                                  "result": "success", "restarts": 0, "since": since} for u in self.cfg.server.units}
-            s["services"]["gpu-tune.service"] = {"active": "inactive", "sub": "dead", "result": "success", "restarts": 0, "since": None}
+            if self.bot_off:
+                s["services"][self.cfg.server.bot_unit].update(active="inactive", sub="dead", since=None)
             s["ollama"] = {"ok": True, "latency_ms": round(r.uniform(0.6, 2.5), 1), "loaded": [
-                {"name": "latochan:latest", "size": 6864314038, "vram": 6537619700, "ctx": 8192,
+                {"name": "llama3.1:8b:latest", "size": 6864314038, "vram": 6537619700, "ctx": 8192,
                  "expires": "2026-10-29T16:19:09Z", "params": "25.2B", "quant": "Q4_K_M", "family": "gemma4"}]}
             if tick % 60 == 0:
                 s["ollama"]["installed"] = [
                     {"name": n, "size": int(sz * GB), "params": p, "quant": q, "family": f, "modified": "2026-10-28T03:00:00Z"}
-                    for n, sz, p, q, f in [("latochan:latest", 15.9, "25.2B", "Q4_K_M", "gemma4"),
-                                           ("latochan-alt:latest", 17.9, "25.2B", "Q4_K_M", "gemma4"),
+                    for n, sz, p, q, f in [("llama3.1:8b:latest", 15.9, "25.2B", "Q4_K_M", "gemma4"),
+                                           ("llama3.2:3b:latest", 17.9, "25.2B", "Q4_K_M", "gemma4"),
                                            ("nomic-embed-text:latest", 0.27, "137M", "F16", "nomic-bert")]]
             s["settings"] = {**self.bot.values(), "thinking": self.thinking, "live_model": self.live_model}
         return s
@@ -243,7 +250,12 @@ class DemoTools:
 
     async def restart_bot(self) -> dict[str, Any]:
         await self._pause("restart LatoChan", 2)
-        return {"ok": True, "output": "active\nLogged in as LatoChan#8876, model=latochan, retrieval=False"}
+        return {"ok": True, "output": "active\nLogged in as LatoChan, model=llama3.1:8b, retrieval=False"}
+
+    async def bot_power(self, on: bool) -> dict[str, Any]:
+        await self._pause(f"turn LatoChan {'on' if on else 'off'}", 1.5)
+        self.s.bot_off = not on
+        return {"ok": True, "on": on, "state": "active" if on else "inactive", "output": "active" if on else "inactive"}
 
     async def restart_ollama(self) -> dict[str, Any]:
         await self._pause("restart Ollama", 2)
@@ -312,7 +324,11 @@ class DemoTools:
     async def persona_put(self, content: str) -> dict[str, Any]:
         self.s.persona = content
         await self._pause("upload persona")
-        return {"backup": "/etc/latochan/persona.md.bak-demo", "saved_to": None}
+        return {"backup": "/opt/latochan/persona.md.bak-demo", "saved_to": None}
+
+    async def prompt_info(self) -> dict[str, Any]:
+        await self._pause("prompt sizes")
+        return {"output": "persona   4500 chars  ~1250 tokens\nrules     1600 chars  ~ 440 tokens\ntotal     6100 chars  ~1690 tokens (demo)"}
 
     async def persona_text(self) -> str:
         return self.s.persona
@@ -328,11 +344,98 @@ class DemoTools:
 
     async def memory_list(self, who: str | None = None) -> dict[str, Any]:
         await self._pause("list memory", 0.2)
-        return {"output": "  20  bob           2026-10-28 16:06:35  likes tea\n  11  alice            2026-10-28 16:06:35  likes chess"}
+        return {"output": "  20  bob           2026-10-28 16:06:35  likes chess\n  11  alice            2026-10-28 16:06:35  likes tea"}
+
+    async def reminders(self) -> dict[str, Any]:
+        if not hasattr(self, "_rem"):
+            self._rem = [{"id": "a1b2c3d4", "text": "water the plants", "due": "2026-11-09T10:00:00+00:00",
+                          "when": "2026-11-09T10:00", "done": False, "sent": False},
+                         {"id": "e5f6a7b8", "text": "review the meeting agenda", "due": None, "when": None,
+                          "done": False, "sent": False}]
+        return {"reminders": [dict(r) for r in self._rem], "tz": "UTC"}
+
+    async def reminders_apply(self, op: dict[str, Any]) -> dict[str, Any]:
+        import hashlib
+        await self.reminders()
+        await self._pause(f"reminder {op.get('op')}", 0.3)
+        hit = next((r for r in self._rem if r["id"] == op.get("id")), None)
+        if op["op"] != "add" and not hit:
+            raise ToolError(422, "that reminder isn't there any more (refresh)")
+        if op["op"] == "add":
+            if not (op.get("text") or "").strip():
+                raise ToolError(422, "reminder text is empty")
+            w = op.get("when")
+            self._rem.append({"id": hashlib.sha1(f"{op['text']}{w}".encode()).hexdigest()[:8], "text": op["text"].strip(),
+                              "due": (w + ":00+00:00") if w else None, "when": w, "done": False, "sent": False})
+        elif op["op"] == "remove":
+            self._rem.remove(hit)
+        elif op["op"] == "done":
+            hit["done"] = bool(op.get("done", True))
+        else:
+            if "text" in op:
+                hit["text"] = op["text"]
+            if "when" in op:
+                hit["when"], hit["due"], hit["sent"] = op["when"], (op["when"] + ":00+00:00") if op["when"] else None, False
+        return await self.reminders()
+
+    async def lights(self) -> dict[str, Any]:
+        if not hasattr(self, "_lamp"):
+            self._lamp = {"on": True, "brightness": 70, "rgb": None, "temperature": 1}
+        return {"devices": [{"name": "living room lamp", "host": "lamp.example.com", "aliases": ["lamp"], "state": dict(self._lamp)}],
+                "has_key": True, "colors": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "magenta"],
+                "temperatures": ["warm", "white", "cool"]}
+
+    async def lights_apply(self, op: dict[str, Any]) -> dict[str, Any]:
+        await self.lights()
+        await self._pause(f"light {op}", 0.3)
+        lamp = self._lamp
+        if op.get("power") == "toggle":
+            op["power"] = "off" if lamp["on"] else "on"
+        if op.get("power") == "off":
+            lamp["on"] = False
+        elif op.get("power") == "on" or any(k in op for k in ("brightness", "color", "temperature")):
+            lamp["on"] = True
+        if "brightness" in op:
+            lamp["brightness"] = op["brightness"]
+        if "color" in op:
+            lamp["rgb"], lamp["temperature"] = 1, None
+        if "temperature" in op:
+            lamp["temperature"], lamp["rgb"] = {"warm": 1, "white": 50, "cool": 100}[op["temperature"]], None
+        return {"device": "living room lamp", "state": dict(lamp)}
+
+    async def friends(self) -> dict[str, Any]:
+        if not hasattr(self, "_friends"):
+            self._friends = [{"id": f'{10**17 + 1}', "name": "dana"}, {"id": f'{10**17 + 10}', "name": "morgan"},
+                             {"id": f'{10**17 + 11}', "name": ""}]
+        return {"friends": list(self._friends), "owner_id": f'{10**17 + 2}', "bot_id": f'{10**17 + 6}', "max": 200}
+
+    async def friends_apply(self, op: str, user_id: str, name: str = "") -> dict[str, Any]:
+        await self.friends()
+        await self._pause(f"{op} friend {user_id}", 0.4)
+        if not re.match(r"^\d{17,20}$", user_id or ""):
+            raise ToolError(422, "that isn't a Discord user ID (17-20 digits)")
+        if op == "add":
+            if user_id == f'{10**17 + 2}':
+                raise ToolError(422, "that's you: you're always her owner, no need to add yourself")
+            hit = next((f for f in self._friends if f["id"] == user_id), None)
+            if hit:
+                hit["name"] = name or hit["name"]
+            else:
+                self._friends.append({"id": user_id, "name": name, "trusted": False})
+        elif op in ("trust", "untrust"):
+            hit = next((f for f in self._friends if f["id"] == user_id), None)
+            if not hit:
+                raise ToolError(422, "not on the friends list (add them first)")
+            hit["trusted"] = op == "trust"
+        else:
+            if not any(f["id"] == user_id for f in self._friends):
+                raise ToolError(422, "not on the friends list")
+            self._friends = [f for f in self._friends if f["id"] != user_id]
+        return {"friends": list(self._friends)}
 
     async def say(self, text: str, channel: str | None = None) -> dict[str, Any]:
         await self._pause(f"post as LatoChan: {text[:80]}")
-        return {"output": "sent 100000000000000000"}
+        return {"output": f'sent {10**17 + 12}'}
 
     async def models(self) -> list[dict[str, Any]]:
         return self.mon.ollama.get("installed", [])
@@ -358,7 +461,7 @@ class DemoChat:
 
     async def stream(self, *, messages: list[dict[str, str]], model: str | None, persona: bool, think: bool,
                      temperature: float | None, max_tokens: int) -> AsyncIterator[dict[str, Any]]:
-        model = model or "latochan"
+        model = model or "llama3.1:8b"
         q = messages[-1]["content"]
         self.mon.add_event("info", "cli", f"CLI → {model}: {q[:200]}")
         yield {"type": "start", "model": model}

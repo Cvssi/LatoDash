@@ -3,7 +3,7 @@
 Everything the dashboard does on the server goes through this link:
   * run()    - a short command, optional stdin, with a timeout
   * stream() - a long-running command whose stdout is read line by line
-  * a local port forward to Ollama (127.0.0.1 on the server), used for chat and model control
+  * a local port forward to Ollama (localhost on the server), used for chat and model control
 
 User-supplied text is only ever passed on stdin, never pasted into a command line.
 """
@@ -60,7 +60,7 @@ def describe_error(exc: BaseException) -> str:
 
 
 class SSHLink:
-    def __init__(self, cfg: SSHConfig, *, forward_host: str = "127.0.0.1", forward_port: int = 11434) -> None:
+    def __init__(self, cfg: SSHConfig, *, forward_host: str = "localhost", forward_port: int = 11434) -> None:
         self._cfg = cfg
         self._forward = (forward_host, forward_port)
         self._conn: asyncssh.SSHClientConnection | None = None
@@ -123,7 +123,7 @@ class SSHLink:
             err: str
             try:
                 conn = await asyncio.wait_for(self._connect(), timeout=self._cfg.connect_timeout + 5)
-                listener = await conn.forward_local_port("127.0.0.1", 0, *self._forward)
+                listener = await conn.forward_local_port("localhost", 0, *self._forward)
                 self.local_ollama_port = listener.get_port()
                 self._conn = conn
                 self.connected_since = loop.time()
@@ -161,7 +161,7 @@ class SSHLink:
     def ollama_base_url(self) -> str:
         if self.local_ollama_port is None:
             raise LinkDown(self.error or "not connected to the server")
-        return f"http://127.0.0.1:{self.local_ollama_port}"
+        return f"http://localhost:{self.local_ollama_port}"
 
     async def run(self, command: str, *, input: str | None = None, timeout: float = 30.0) -> RunResult:
         conn = await self.wait_connected(timeout=5)

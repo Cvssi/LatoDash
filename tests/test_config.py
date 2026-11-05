@@ -20,7 +20,7 @@ def test_relative_paths_resolve_next_to_config(tmp_path):
     cfg = load_config(p)
     assert cfg.ssh.key_file == tmp_path / "keys" / "latodash_ed25519"
     assert cfg.latochan_dir == (tmp_path / ".." / "latochan").resolve()
-    assert cfg.listen_host == "127.0.0.1"
+    assert cfg.listen_host == "localhost"
 
 
 def test_unknown_key_rejected(tmp_path):
@@ -32,6 +32,6 @@ def test_unknown_key_rejected(tmp_path):
 
 def test_non_loopback_refused(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text(GOOD + 'listen_host = "0.0.0.0"\n')
+    p.write_text(GOOD + 'listen_host = "server.example.com"\n')
     with pytest.raises(ConfigError):
         load_config(p)

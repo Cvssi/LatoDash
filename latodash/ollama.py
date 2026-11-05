@@ -18,7 +18,7 @@ class OllamaError(RuntimeError):
 
 
 def valid_model(name: str) -> str:
-    if not isinstance(name, str) or not MODEL_NAME.fullmatch(name) or name.endswith(':cloud'):
+    if not isinstance(name, str) or not MODEL_NAME.match(name):
         raise ValueError("invalid model name")
     return name
 

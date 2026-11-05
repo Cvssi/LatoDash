@@ -43,7 +43,7 @@ export function mount(root) {
   const body = h("div", { class: "term-body", tabindex: "0" });
   const input = h("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": "CLI input",
     placeholder: "ask the model anything, or /help" });
-  const promptEl = h("span", { class: "prompt" }, "user@server ›");
+  const promptEl = h("span", { class: "prompt" }, "owner@server ›");
   const hint = h("span", { class: "hint" }, "Enter send · ↑↓ history · Tab complete · Esc stop");
   const headTitle = h("span", {}, "lato-watch — live brain");
 
@@ -84,12 +84,12 @@ export function mount(root) {
   const sys = (text, cls = "t-sys") => line(span("t-dash", "» "), span(cls, text));
 
   // ---- live brain stream (same colours as lato-watch)
-  const KIND_CLASS = { in: "t-in", raw: "t-raw", think: "t-think", replied: "t-ok", quiet: "t-ok", memory: "t-think" };
-  const LABEL = { in: "IN  ", raw: "RAW ", think: "THINK", replied: "", quiet: "" };
+  const KIND_CLASS = { in: "t-in", raw: "t-raw", think: "t-think", replied: "t-ok", quiet: "t-ok", fire: "t-ok", memory: "t-think" };
+  const LABEL = { in: "IN  ", raw: "RAW ", think: "THINK", replied: "", quiet: "", fire: "FIRE" };
   function logLine(e) {
     const cls = e.level === "error" ? "t-err" : e.level === "warn" ? "t-warn" : KIND_CLASS[e.kind] || (e.source === "dashboard" ? "t-dash" : "t-sys");
     let text = e.text;
-    if (e.source === "bot" && LABEL[e.kind] !== undefined && LABEL[e.kind]) text = text.replace(/^(IN {3}|RAW {2}|THINK|FIRE)\s*/, `${LABEL[e.kind]} `);
+    if (e.source === "bot" && LABEL[e.kind] !== undefined && LABEL[e.kind]) text = text.replace(/^(IN {3}|RAW {2}|THINK)\s*/, `${LABEL[e.kind]} `);
     const src = e.source === "bot" ? "" : `[${e.source === "system" ? e.unit.replace(/\.(service|timer)$/, "") : e.source}] `;
     return line(span("t-time", `${f.time(e.ts)} `), span(cls, src + text));
   }
@@ -113,7 +113,7 @@ export function mount(root) {
     try {
       const res = await api.get("/api/models");
       const names = res.models.map((m) => m.name);
-      const def = res.live || store.state?.settings?.live_model || store.config?.default_model || "latochan";
+      const def = res.live || store.state?.settings?.live_model || store.config?.default_model || "llama3.1:8b";
       const current = opts.model || names.find((n) => n.split(":")[0] === def) || names[0];
       modelSel.replaceChildren(...names.map((n) => h("option", { value: n }, n)));
       modelSel.value = current;
@@ -165,7 +165,7 @@ export function mount(root) {
       if (reply.trim()) messages.push({ role: "assistant", content: reply.trim() });
       else messages.pop(); // don't keep an unanswered question in the context
       abort = null;
-      promptEl.textContent = "user@server ›";
+      promptEl.textContent = "owner@server ›";
       held.forEach(logLine);
       held = [];
     }

@@ -403,7 +403,11 @@ class Monitor:
             if junction is not None and junction >= t.gpu_junction_warn:
                 lvl = "crit" if junction >= t.gpu_junction_crit else "warn"
                 add(lvl, "gpu-temp", f"GPU hotspot {junction:.0f} °C",
-                    "The Vega fell off the PCIe bus at ~106 °C before. Check fans / repaste.")
+                    "The GPU is above the configured hotspot threshold. Check the cooling system.")
+            edge = gpu.get("temp_edge")
+            if junction is None and edge is not None and edge >= t.gpu_edge_warn:
+                lvl = "crit" if edge >= t.gpu_edge_crit else "warn"
+                add(lvl, "gpu-temp", f"GPU {edge:.0f} °C", "Core temperature is high. Check case airflow and fans.")
             if gpu.get("vram_total") and gpu.get("vram_used", 0) / gpu["vram_total"] > 0.985:
                 add("warn", "vram", "VRAM almost full", "A bigger context or second model may spill to RAM.")
             mem = m.get("mem") or {}

@@ -1,4 +1,4 @@
-// API calls: every Ollama HTTP request, Discord reply, plus per-request LLM token stats.
+// API calls: every Ollama HTTP request, and Discord reply, plus per-request LLM token stats.
 import { store } from "../store.js";
 import { h } from "../ui.js";
 import * as f from "../fmt.js";

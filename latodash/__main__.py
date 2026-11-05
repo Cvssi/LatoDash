@@ -66,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.port:
         cfg = replace(cfg, listen_port=args.port)
 
-    url = f"http://127.0.0.1:{cfg.listen_port}/"
-    if _port_in_use("127.0.0.1", cfg.listen_port):
+    url = f"http://localhost:{cfg.listen_port}/"
+    if _port_in_use("localhost", cfg.listen_port):
         log.info("something is already listening on %s - probably LatoDash itself; opening it", url)
         if cfg.open_browser and not args.no_browser:
             webbrowser.open(url)
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime = real_runtime(cfg)
 
     app = create_app(cfg, runtime)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cfg.listen_port, log_config=None,
+    server = uvicorn.Server(uvicorn.Config(app, host="localhost", port=cfg.listen_port, log_config=None,
                                            ws_ping_interval=20, ws_ping_timeout=20, access_log=False))
 
     async def serve() -> None:

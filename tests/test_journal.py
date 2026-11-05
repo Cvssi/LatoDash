@@ -2,7 +2,7 @@ from latodash.journal import parse_entry, parse_go_duration_ms
 
 
 def entry(msg, unit="ollama.service", prio=6, **extra):
-    return {"__REALTIME_TIMESTAMP": "1793206081177186", "MESSAGE": msg, "PRIORITY": str(prio),
+    return {"__REALTIME_TIMESTAMP": f'{10**15}', "MESSAGE": msg, "PRIORITY": str(prio),
             "_SYSTEMD_UNIT": unit, "SYSLOG_IDENTIFIER": unit.split(".")[0], **extra}
 
 
@@ -15,16 +15,16 @@ def test_go_durations():
 
 
 def test_gin_line():
-    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       127.0.0.1 | POST     "/api/chat"'))
+    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       localhost | POST     "/api/chat"'))
     assert ev.kind == "gin" and ev.level == "info"
-    assert ev.data == {"status": 200, "latency_ms": 13780.0, "client": "127.0.0.1", "method": "POST",
+    assert ev.data == {"status": 200, "latency_ms": 13780.0, "client": "localhost", "method": "POST",
                        "path": "/api/chat", "health": False}
 
 
 def test_gin_health_and_errors():
-    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:33:39 | 200 | 64.964µs |       127.0.0.1 | GET      "/api/ps"'))
+    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:33:39 | 200 | 64.964µs |       localhost | GET      "/api/ps"'))
     assert ev.data["health"] and ev.level == "debug"
-    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:33:39 | 500 |   2.1s |       127.0.0.1 | POST     "/api/chat"'))
+    ev = parse_entry(entry('[GIN] 2026/10/28 - 16:33:39 | 500 |   2.1s |       localhost | POST     "/api/chat"'))
     assert ev.level == "error"
 
 
@@ -75,3 +75,9 @@ def test_kernel_and_binary_message():
 def test_bad_entries_are_skipped():
     assert parse_entry({"MESSAGE": "x"}) is None
     assert parse_entry({"__REALTIME_TIMESTAMP": "1", "MESSAGE": ""}) is None
+
+
+def test_nvidia_kernel_messages_are_gpu_events():
+    ev = parse_entry({"__REALTIME_TIMESTAMP": "1", "MESSAGE": list(b"NVRM: Xid (PCI:0000:05:00): 79, GPU has fallen off the bus."),
+                      "PRIORITY": "3", "_TRANSPORT": "kernel"})
+    assert ev.source == "kernel" and ev.kind == "gpu"

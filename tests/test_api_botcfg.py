@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(not (LATOCHAN / "botsettings.py").exists(), reas
 def client():
     cfg = AppConfig(ssh=SSHConfig(host="h", user="u", key_file=Path("k"), known_hosts=Path("kh")),
                     listen_port=8765, latochan_dir=LATOCHAN)
-    with TestClient(create_app(cfg, demo_runtime(cfg)), base_url="http://127.0.0.1:8765") as c:
+    with TestClient(create_app(cfg, demo_runtime(cfg)), base_url="http://localhost:8765") as c:
         yield c
 
 

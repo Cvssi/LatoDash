@@ -1,8 +1,8 @@
 // Formatting helpers. Everything returns plain strings (never HTML).
 
-const timeFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-const shortFmt = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
-const dayFmt = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const shortFmt = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const dayFmt = new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
 export const time = (ts) => (ts ? timeFmt.format(new Date(ts * 1000)) : "—");
 export const hm = (ts) => (ts ? shortFmt.format(new Date(ts * 1000)) : "—");
@@ -21,7 +21,7 @@ export const rate = (bps) => (bps == null ? "—" : `${bytes(bps)}/s`);
 
 export function num(n, digits = 0) {
   if (n == null || Number.isNaN(n)) return "—";
-  return Number(n).toLocaleString("en-GB", { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
 }
 
 export function compact(n) {

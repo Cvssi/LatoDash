@@ -97,7 +97,7 @@ def test_stale_memory_becomes_conflict_without_overwriting_pc_copy(tmp_path):
     file.write_text('my existing local copy')
     tools, _ = make(tmp_path, RunResult(1, '', 'Notes changed since export. Nothing imported; export again.'))
     with pytest.raises(ToolError) as error:
-        asyncio.run(tools.memory_put('#snapshot ' + 'a' * 64 + '\n[alice 111111111111111111]\nlikes tea\n'))
+        asyncio.run(tools.memory_put('#snapshot ' + 'a' * 64 + f'\n[alice {10**17 + 7}]\nlikes tea\n'))
     assert error.value.status == 409
     assert file.read_text() == 'my existing local copy'
 

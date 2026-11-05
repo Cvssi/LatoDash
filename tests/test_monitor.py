@@ -35,7 +35,7 @@ def conversation(mon, ts, task=7, gen_tokens=41, prompt_tokens=887):
     mon.ingest_entry(e(ts + 13, f"slot print_timing: id  0 | task {task} |        eval time =    2047.97 ms /    {gen_tokens} tokens (   51.20 ms per token,    19.53 tokens per second)"))
     mon.ingest_entry(e(ts + 13, f"slot print_timing: id  0 | task {task} |       total time =   13691.18 ms /   928 tokens"))
     mon.ingest_entry(e(ts + 13, f"slot      release: id  0 | task {task} | stop processing: n_tokens = 3700, truncated = 0"))
-    mon.ingest_entry(e(ts + 13, '[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       127.0.0.1 | POST     "/api/chat"'))
+    mon.ingest_entry(e(ts + 13, '[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       localhost | POST     "/api/chat"'))
     mon.ingest_entry(bot(ts + 13.1, "RAW  (13.8s) yo"))
     mon.ingest_entry(bot(ts + 13.5, "replied to owner in #general"))
 
@@ -66,7 +66,7 @@ def test_inflight_tracking():
 
 def test_cursor_dedupe():
     mon = Monitor(CFG, clock=Clock())
-    line = '[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       127.0.0.1 | POST     "/api/chat"'
+    line = '[GIN] 2026/10/28 - 16:19:09 | 200 |   13.78s |       localhost | POST     "/api/chat"'
     assert mon.ingest_entry(e(T0, line, cursor="c1"))
     assert mon.ingest_entry(e(T0, line, cursor="c1")) is None
     assert len(mon.api_calls) == 1
@@ -74,7 +74,7 @@ def test_cursor_dedupe():
 
 def test_health_calls_counted_not_listed():
     mon = Monitor(CFG, clock=Clock())
-    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 16:33:39 | 200 | 64.964µs |       127.0.0.1 | GET      "/api/ps"'))
+    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 16:33:39 | 200 | 64.964µs |       localhost | GET      "/api/ps"'))
     assert mon.health["count"] == 1 and not mon.api_calls and not mon.logs
 
 
@@ -95,7 +95,7 @@ def test_alerts_pending_reply_and_hot_gpu():
     mon = Monitor(CFG, clock=clock)
     mon.set_link("connected", None)
     mon.ingest_metrics({"t": T0, "gpu": {"temp_junction": 101}, "ollama": {"ok": True, "latency_ms": 2,
-                        "loaded": [{"name": "latochan:latest"}]}})
+                        "loaded": [{"name": "llama3.1:8b:latest"}]}})
     mon.ingest_entry(bot(T0, "IN   #general | owner: hi"))
     clock.t = T0 + 5
     ids = {a["id"]: a["level"] for a in mon.alerts()}
@@ -120,12 +120,12 @@ def test_service_and_model_alerts():
     mon.ingest_metrics({"t": T0, "services": {
         "latochan.service": {"active": "inactive", "result": "exit-code", "restarts": 0},
         "ollama.service": {"active": "active", "restarts": 2},
-        "gpu-tune.service": {"active": "inactive", "result": "success"},
+        "optional-test.service": {"active": "inactive", "result": "success"},
     }, "ollama": {"ok": True, "latency_ms": 1, "loaded": []}})
     ids = {a["id"]: a["level"] for a in mon.alerts()}
     assert ids["svc:latochan.service"] == "crit"
     assert ids["restart:ollama.service"] == "warn"
-    assert "svc:gpu-tune.service" not in ids
+    assert "svc:optional-test.service" not in ids
     assert ids["model"] == "warn"
 
 
@@ -152,6 +152,20 @@ def test_one_crash_counts_as_one_error():
 
 def test_head_404_not_an_api_error():
     mon = Monitor(CFG, clock=Clock())
-    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 02:55:03 | 404 |     97.25µs |       127.0.0.1 | HEAD     "/api/blobs/sha256:54f4"'))
-    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 02:55:03 | 500 |     2.88s |       127.0.0.1 | POST     "/api/chat"'))
+    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 02:55:03 | 404 |     97.25µs |       localhost | HEAD     "/api/blobs/sha256:54f4"'))
+    mon.ingest_entry(e(T0, '[GIN] 2026/10/28 - 02:55:03 | 500 |     2.88s |       localhost | POST     "/api/chat"'))
     assert mon.stats()["api"]["errors"] == 1
+
+
+def test_nvidia_core_temp_alert_when_no_hotspot_sensor():
+    clock = Clock()
+    mon = Monitor(CFG, clock=clock)
+    mon.set_link("connected", None)
+    mon.ingest_metrics({"t": T0, "gpu": {"temp_edge": 93}, "ollama": {"ok": True, "latency_ms": 2, "loaded": []}})
+    clock.t = T0 + 5
+    assert {a["id"]: a["level"] for a in mon.alerts()}.get("gpu-temp") == "crit"
+    mon.ingest_metrics({"t": T0 + 6, "gpu": {"temp_edge": 70}, "ollama": {"ok": True, "latency_ms": 2, "loaded": []}})
+    clock.t = T0 + 8
+    assert "gpu-temp" not in {a["id"] for a in mon.alerts()}
+    mon.ingest_metrics({"t": T0 + 9, "gpu": {"temp_edge": 80, "temp_junction": 60}, "ollama": {"ok": True, "latency_ms": 2, "loaded": []}})
+    assert "gpu-temp" not in {a["id"] for a in mon.alerts()}   # AMD card with a hotspot sensor: edge rule is not used

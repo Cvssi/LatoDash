@@ -82,7 +82,7 @@ function renderTopbar() {
 
 function tickClock() {
   if (!store.state) return;
-  $("clock").textContent = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  $("clock").textContent = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
     .format(new Date(store.serverNow() * 1000));
 }
 setInterval(tickClock, 1000);

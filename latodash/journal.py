@@ -21,7 +21,7 @@ class LogEvent:
     source: str          # bot | ollama | kernel | system | dashboard
     unit: str
     level: str           # debug | info | warn | error
-    kind: str            # in, raw, think, replied, quiet, gin, timing, progress, systemd, tool, ...
+    kind: str            # in, raw, think, replied, quiet, fire, gin, timing, progress, systemd, tool, ...
     text: str
     data: dict[str, Any] = field(default_factory=dict)
     id: int = field(default_factory=lambda: next(_ids))
@@ -239,7 +239,8 @@ def parse_entry(entry: dict[str, Any], *, bot_unit: str = "latochan.service",
         level, kind, msg, data = _parse_ollama(msg, entry)
     elif source == "kernel":
         level = _priority_level(entry)
-        kind = "gpu" if "amdgpu" in msg or "drm" in msg.lower() else "kernel"
+        low = msg.lower()
+        kind = "gpu" if "amdgpu" in msg or "drm" in low or "nvrm" in low or "nvidia" in low else "kernel"
     else:
         level, kind = _priority_level(entry), "service"
     return LogEvent(ts=ts, source=source, unit=unit, level=level, kind=kind, text=msg, data=data)

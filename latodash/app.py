@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from anyio import CancelScope
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -384,7 +385,9 @@ def create_app(cfg: AppConfig, runtime: Runtime) -> FastAPI:
             tasks = (reader_task,) if getter is None else (reader_task, getter)
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # ASGI cancellation can arrive again while the socket tasks are winding down.
+            with CancelScope(shield=True):
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     app.mount("/", NoCacheStatic(directory=STATIC_DIR, html=True), name="static")
     app.add_middleware(LocalOnlyMiddleware, port=cfg.listen_port)

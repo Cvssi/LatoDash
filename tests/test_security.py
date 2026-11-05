@@ -52,9 +52,10 @@ def test_websocket_origin(client):
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("ws://localhost:8765/ws", headers={"origin": "http://evil.example"}) as ws:
             ws.receive_json()
-    with client.websocket_connect("ws://localhost:8765/ws", headers={"origin": "http://localhost:8765"}) as ws:
-        msg = ws.receive_json()
-        assert msg["type"] == "snapshot" and msg["data"]["config"]["demo"] is True
+    for _ in range(50):
+        with client.websocket_connect("ws://localhost:8765/ws", headers={"origin": "http://localhost:8765"}) as ws:
+            msg = ws.receive_json()
+            assert msg["type"] == "snapshot" and msg["data"]["config"]["demo"] is True
 
 
 def test_validation(client):
